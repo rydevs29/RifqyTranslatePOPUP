@@ -2,37 +2,46 @@
 let activeTab = 'text';
 let voices = [];
 let historyDB = JSON.parse(localStorage.getItem('rt_history')) || [];
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
 
 // --- INIT ---
 function init() {
+    // Setup Dropdowns
     setupDD(langTextDB, 'lstTxtTgt', 'lblTxtTgt', 'valTxtTgt', 'en');
     setupDD(langVoiceDB, 'lstVA', 'lblVA', 'valVA', 0);
     setupDD(langVoiceDB, 'lstVB', 'lblVB', 'valVB', 1);
     setupDD(langTextDB, 'lstWebTgt', 'lblWebTgt', 'valWebTgt', 'id');
     
-    window.speechSynthesis.onvoiceschanged = () => {
-        voices = window.speechSynthesis.getVoices();
-        const sel = document.getElementById('setVoice');
-        sel.innerHTML = '';
-        voices.forEach((v, i) => sel.add(new Option(`${v.name} (${v.lang})`, i)));
-    };
+    // Load Voices
+    if('speechSynthesis' in window) {
+        window.speechSynthesis.onvoiceschanged = () => {
+            voices = window.speechSynthesis.getVoices();
+            const sel = document.getElementById('setVoice');
+            if(sel) {
+                sel.innerHTML = '';
+                voices.forEach((v, i) => sel.add(new Option(`${v.name} (${v.lang})`, i)));
+            }
+        };
+    }
+
     renderHist();
 
-    // Sembunyikan tombol popup jika sudah di dalam popup
-    if(window.opener) {
+    // Sembunyikan tombol popup jika sedang di dalam mode popup
+    if(window.opener && window.opener !== window) {
         let btn = document.getElementById('btnPopup');
         if(btn) btn.style.display = 'none';
+        // Opsional: Sesuaikan margin jika di popup
+        document.body.classList.add('popup-mode');
     }
 }
 
-// --- POPUP FUNCTION (BARU) ---
+// --- POPUP FUNCTION ---
 function openPopup() {
-    // Membuka jendela baru ukuran HP (360x640)
-    let w = 360; let h = 640;
-    let left = (screen.width/2)-(w/2); let top = (screen.height/2)-(h/2);
-    let params = `scrollbars=no,resizable=no,status=no,location=no,toolbar=no,menubar=no,width=${w},height=${h},top=${top},left=${left}`;
-    window.open(window.location.href, 'RifqyTranslateProPopup', params);
+    let w = 380; let h = 650;
+    let left = (screen.width/2)-(w/2); 
+    let top = (screen.height/2)-(h/2);
+    // Membuka jendela baru di URL yang sama
+    window.open(window.location.href, 'RifqyTranslateProPopup', 
+    `scrollbars=yes,resizable=yes,width=${w},height=${h},top=${top},left=${left}`);
 }
 
 // --- TOGGLE COMPARE UI ---
@@ -100,7 +109,7 @@ async function runTranslate() {
             badge.classList.remove('hidden');
             saveHist(txt, result.text, 'auto', tgt);
         } else {
-            output.value = "Semua server sibuk. Cek koneksi.";
+            output.value = "Semua server sibuk/gagal.";
         }
     }
 }
@@ -180,7 +189,7 @@ async function fetchSingle(text, s, t, type) {
     } catch (e) { clearTimeout(id); return null; }
 }
 
-// --- VOICE (UNCHANGED) ---
+// --- VOICE ---
 let rec, isRec=false, side=null;
 if('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -223,19 +232,47 @@ async function doVoiceTrans(txt) {
     }
 }
 
-// --- FILE / OCR ---
+// --- FILE / OCR (DIPERBAIKI) ---
 async function handleFile() {
     let f = document.getElementById('fileIn').files[0];
     if(!f) return;
     let loadEl = document.getElementById('ocrLoad');
     let statusText = loadEl.querySelector('p');
     loadEl.classList.remove('hidden'); document.getElementById('ocrRes').classList.add('hidden');
+    
+    // 1. IMAGE OCR
     if(f.type.includes('image')) {
         statusText.innerText = "Scan Gambar...";
-        try { let {data:{text}} = await Tesseract.recognize(f, 'eng', {logger: m => { if(m.status==='recognizing text') statusText.innerText=`Scan: ${Math.round(m.progress*100)}%` }}); finishOCR(text); } catch(e){ statusText.innerText="Err"; }
+        if(typeof Tesseract === 'undefined') { alert("Library Tesseract Gagal Muat"); return; }
+        try { 
+            let {data:{text}} = await Tesseract.recognize(f, 'eng', {logger: m => { if(m.status==='recognizing text') statusText.innerText=`Scan: ${Math.round(m.progress*100)}%` }}); 
+            finishOCR(text); 
+        } catch(e){ statusText.innerText="Err"; }
+    
+    // 2. PDF READER
     } else if(f.type.includes('pdf')) {
         statusText.innerText = "Baca PDF...";
-        let fr = new FileReader(); fr.onload=async function(){ try { const pdf = await pdfjsLib.getDocument(new Uint8Array(this.result)).promise; let ft=""; for(let i=1;i<=Math.min(pdf.numPages,3);i++){let p=await pdf.getPage(i);let c=await p.getTextContent();c.items.forEach(x=>ft+=x.str+" ");} finishOCR(ft); } catch(e){statusText.innerText="Err";} }; fr.readAsArrayBuffer(f);
+        if(typeof pdfjsLib === 'undefined') { alert("Library PDF Gagal Muat"); return; }
+        
+        // SET WORKER DI SINI AGAR AMAN
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+        
+        let fr = new FileReader(); 
+        fr.onload=async function(){ 
+            try { 
+                const pdf = await pdfjsLib.getDocument(new Uint8Array(this.result)).promise; 
+                let ft=""; 
+                for(let i=1;i<=Math.min(pdf.numPages,3);i++){
+                    let p=await pdf.getPage(i);
+                    let c=await p.getTextContent();
+                    c.items.forEach(x=>ft+=x.str+" ");
+                } 
+                finishOCR(ft); 
+            } catch(e){ statusText.innerText="Gagal Baca PDF"; console.log(e); } 
+        }; 
+        fr.readAsArrayBuffer(f);
+    
+    // 3. TEXT FILE
     } else {
         statusText.innerText = "Baca File...";
         let r = new FileReader(); r.onload=e=>finishOCR(e.target.result); r.readAsText(f);
@@ -258,8 +295,11 @@ function setupDD(db, listId, lblId, valId, defVal) {
     const list = document.getElementById(listId);
     const label = document.getElementById(lblId);
     const valIn = document.getElementById(valId);
+    if(!list || !label || !valIn) return; // Safety Check
+    
     if(typeof defVal === 'string') { let f = db.find(x => x.code === defVal); if(f) { label.innerText = f.name; valIn.value = f.code; } } 
     else { label.innerText = db[defVal][0]; valIn.value = defVal; }
+    
     db.forEach((item, idx) => {
         let li = document.createElement('li');
         let name = (item.name) ? item.name : item[0];
@@ -274,11 +314,22 @@ function toggleDD(id) { document.getElementById(id).classList.toggle('hidden'); 
 let sT; function filterLang(inpId, listId) { clearTimeout(sT); sT=setTimeout(()=>{ let f=document.getElementById(inpId).value.toLowerCase(); for(let li of document.getElementById(listId).getElementsByTagName('li')) li.style.display=li.innerText.toLowerCase().includes(f)?"":"none"; },100); }
 function closeAllDropdowns(e) { if(!e.target.closest('button') && !e.target.closest('input')) document.querySelectorAll('[id^=dd]').forEach(x => x.classList.add('hidden')); }
 function goTab(t) {
-    ['text','voice','img','hist','web'].forEach(x => { document.getElementById('tab-'+x).classList.add('hidden'); document.getElementById('nav-'+x).className="flex flex-col items-center gap-1 text-slate-600 transition hover:text-white"; });
-    document.getElementById('tab-'+t).classList.remove('hidden');
+    ['text','voice','img','hist','web'].forEach(x => { 
+        let sec = document.getElementById('tab-'+x);
+        let nav = document.getElementById('nav-'+x);
+        if(sec) sec.classList.add('hidden'); 
+        if(nav) nav.className="flex flex-col items-center gap-1 text-slate-600 transition hover:text-white"; 
+    });
+    
+    let target = document.getElementById('tab-'+t);
+    if(target) target.classList.remove('hidden');
+    
     if(t==='voice') document.getElementById('tab-voice').style.display='flex'; else document.getElementById('tab-voice').style.display='none';
+    
     let c = (t==='text')?'blue-500':(t==='voice'?'orange-500':'purple-500');
-    document.getElementById('nav-'+t).className=`flex flex-col items-center gap-1 text-${c} transition font-bold scale-110`; activeTab=t;
+    let navT = document.getElementById('nav-'+t);
+    if(navT) navT.className=`flex flex-col items-center gap-1 text-${c} transition font-bold scale-110`; 
+    activeTab=t;
 }
 function runWebTranslate() {
     let u=document.getElementById('webUrl').value.trim();
@@ -290,7 +341,9 @@ function saveHist(src, tgt, l1, l2) {
     if(historyDB.length>30) historyDB.pop(); localStorage.setItem('rt_history', JSON.stringify(historyDB)); renderHist();
 }
 function renderHist() {
-    let h=document.getElementById('histList'); h.innerHTML='';
+    let h=document.getElementById('histList'); 
+    if(!h) return;
+    h.innerHTML='';
     if(historyDB.length===0){h.innerHTML='<p class="text-center text-slate-600 text-xs">Kosong.</p>';return;}
     historyDB.forEach((x, i) => {
         h.innerHTML+=`<div onclick="loadHist(${i})" class="bg-white/5 p-3 rounded-xl hover:bg-white/10 cursor-pointer active:scale-95 transition"><div class="flex justify-between text-[10px] text-slate-500 mb-1"><span class="font-bold text-blue-500/70">${x.l1} &rarr; ${x.l2}</span><span>${x.d}</span></div><p class="text-slate-300 text-sm mb-1 truncate">${x.s}</p><p class="text-white text-sm font-medium truncate">${x.t}</p></div>`;
@@ -307,4 +360,10 @@ function speak(elId, valId) { speakRaw(document.getElementById(elId).value, docu
 function speakRaw(txt, lang) { if(!txt)return; window.speechSynthesis.cancel(); let u=new SpeechSynthesisUtterance(txt); u.lang=lang; u.rate=document.getElementById('setRate').value; u.pitch=document.getElementById('setPitch').value; let v=document.getElementById('setVoice').value; if(voices[v]) u.voice=voices[v]; window.speechSynthesis.speak(u); }
 function copyText(id) { navigator.clipboard.writeText(document.getElementById(id).value); alert("Disalin!"); }
 
-init();
+// Jalankan Init dengan aman
+if(document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+                        }
+                                                   
